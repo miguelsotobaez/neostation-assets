@@ -33,16 +33,10 @@ To ensure optimal performance on handheld and Android devices, please follow the
 
 #### **Backgrounds**
 * **Format:** Must be **.webp** (optimized) or **.gif** (animated).
-* **Resolution:** Exactly **1024 x 1024** px.
+* **Resolution:** Minimum **1024 x 1024** px.
 * **Location:** `themes/[your-art]/backgrounds/`
 * **Naming:** `[shortname].[extension]` (e.g., `gba.webp`, `ps1.gif`).
 * **Fallback:** Always include a `default.webp` for unspecified systems.
-
-#### **Logos (Optional if you need custom logos)**
-* **Format:** **.webp** (with transparency).
-* **Resolution:** Exactly **800 x 380** px.
-* **Location:** `themes/[your-art]/logos/`
-* **Naming:** Must match the system `shortname` (e.g., `snes.png`).
 
 ## Publishing
 Once your system art is ready, ensure you:
