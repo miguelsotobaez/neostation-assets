@@ -3,7 +3,9 @@
 # files in that theme's backgrounds/ directory. Requires: jq
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Defaults to the repo itself; pass a root (e.g. dist/) to regenerate the
+# systems lists of a built pack against the files that pack actually contains.
+repo_root="$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")/..}" && pwd)"
 themes_dir="$repo_root/themes"
 
 changed=0

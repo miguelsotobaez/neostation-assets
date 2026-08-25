@@ -1,0 +1,122 @@
+name: Build asset pack
+
+# Single writer to main. This deliberately merges what used to be two
+# workflows (systems sync + pack build): both fired on the same merge, both
+# pushed to main, and whichever lost the race failed. One job, one push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'themes/**'
+      - 'preview/**'
+      - 'manifest.json'
+      - 'scripts/optimize-assets.sh'
+      - 'scripts/gen-theme-systems.sh'
+      - '.github/workflows/optimize-assets.yml'
+  pull_request:
+    paths:
+      - 'themes/**'
+      - 'preview/**'
+      - 'scripts/optimize-assets.sh'
+      - 'scripts/gen-theme-systems.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: build-asset-pack
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y webp lzip jq
+
+      # No distro packages an SSIMULACRA2 binary, but libjxl's own release
+      # ships a static one. Using the upstream build (rather than a rebuild)
+      # keeps CI scores bit-identical to what you measure locally.
+      - name: Install ssimulacra2
+        run: |
+          curl -sSLf -o jxl.tar.lz \
+            https://github.com/libjxl/libjxl/releases/download/v0.12.0/jxl-linux-x86_64-static.tar.lz
+          lzip -d jxl.tar.lz
+          tar -xf jxl.tar tools/ssimulacra2
+          sudo install -m755 tools/ssimulacra2 /usr/local/bin/ssimulacra2
+          ssimulacra2 2>&1 | head -1
+
+      # A new background file means a new entry in that theme's systems list.
+      # Runs before the pack build so the pack is produced from a source tree
+      # that is already correct.
+      - name: Sync systems lists
+        run: bash scripts/gen-theme-systems.sh
+
+      - name: Build optimized pack
+        run: |
+          chmod +x scripts/optimize-assets.sh
+          scripts/optimize-assets.sh | tee build.log
+
+      - name: Job summary
+        run: |
+          {
+            echo '## Asset pack'
+            echo '```'
+            cat build.log
+            echo '```'
+            if ! git diff --quiet -- 'themes/**/theme.json'; then
+              echo '### Systems list changes'
+              echo '```diff'
+              git diff -- 'themes/**/theme.json'
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # On a PR this is the end of it: build, measure, report. Nothing is
+      # written back until the PR is actually merged.
+      - name: Upload pack artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: neostation-assets-optimized
+          path: dist/
+          retention-days: 14
+
+      # Both outputs in one commit, so the systems list and the pack it
+      # describes can never disagree on main.
+      #
+      # [skip ci] stops this push retriggering. Even if it were dropped, the
+      # rerun would find nothing to commit and stop after one extra cycle --
+      # the step is idempotent, not merely guarded.
+      - name: Commit systems lists and pack
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A dist
+          git add -- 'themes/**/theme.json'
+          if git diff --cached --quiet; then
+            echo "Systems lists and pack already up to date; nothing to commit"
+            exit 0
+          fi
+          git commit -q -m "chore: sync systems lists and rebuild asset pack from ${GITHUB_SHA::7} [skip ci]"
+          # Nothing else writes to main any more, but a human pushing directly
+          # during the ~5 minute build would still collide. Rebase and retry
+          # rather than clobbering them.
+          for i in 1 2 3; do
+            if git pull --rebase --autostash -q origin main && git push -q origin HEAD:main; then
+              echo "Published on attempt $i"
+              exit 0
+            fi
+            echo "Push race; retrying ($i/3)"
+            sleep $((i * 5))
+          done
+          echo "Could not publish after 3 attempts" >&2
+          exit 1
