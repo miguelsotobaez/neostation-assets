@@ -21,6 +21,11 @@ on:
       - 'scripts/optimize-assets.sh'
       - 'scripts/gen-theme-systems.sh'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Re-encode every asset, ignoring the committed pack'
+        type: boolean
+        default: false
 
 concurrency:
   group: build-asset-pack
@@ -60,7 +65,15 @@ jobs:
       - name: Sync systems lists
         run: bash scripts/gen-theme-systems.sh
 
+      # The pack is committed, so the checkout already carries the previous
+      # build: on a PR, the base branch's. The script keeps every entry whose
+      # source is byte-for-byte unchanged, which is the whole pack bar the art
+      # the PR actually touched. It rebuilds in full on its own when the
+      # encoder version or the ladder parameters move, so an incremental pack
+      # can never be a mix of two toolchains.
       - name: Build optimized pack
+        env:
+          FORCE_REBUILD: ${{ inputs.force_rebuild && '1' || '0' }}
         run: |
           chmod +x scripts/optimize-assets.sh
           scripts/optimize-assets.sh | tee build.log

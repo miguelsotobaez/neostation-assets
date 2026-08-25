@@ -10,6 +10,20 @@
 # against its original. The smallest candidate still above the quality floor
 # wins. If nothing clears the floor, or the win is too small to be worth the
 # extra generation of loss, the original is copied through untouched.
+#
+# The ladder costs ~13 s per background, so re-encoding the whole pack to
+# publish one new system's artwork is most of a CI run spent reproducing bytes
+# that already exist. It does reproduce them: the encode is deterministic, so
+# an unchanged source yields a byte-identical result. That is what makes the
+# work skippable rather than merely cacheable, and this script skips it: a
+# source whose SHA-256 matches the entry in the previous pack keeps the output
+# already in dist/.
+#
+# Deterministic *given the same tools and parameters*. Both are fingerprinted
+# into the manifest (encoder version, metric version, ladder, floor, size
+# thresholds), and any change to them rebuilds the pack in full, so a libwebp
+# bump or a retuned ladder can never leave a half-and-half pack behind. Set
+# FORCE_REBUILD=1 to do that by hand.
 
 set -euo pipefail
 
@@ -64,8 +78,11 @@ ssim_score() {
 # ------------------------------------------------------------------ one image
 
 report() {
-  # rel  action  orig_bytes  new_bytes  quality  score
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@" > "$(mktemp "$REPORT_DIR/r.XXXXXX")"
+  # rel  action  orig_bytes  new_bytes  quality  score  src_sha256
+  #
+  # The hash is what the next run compares against to decide whether this
+  # entry can be kept, so the report doubles as the build manifest.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" > "$(mktemp "$REPORT_DIR/r.XXXXXX")"
 }
 
 optimize_one() {
@@ -74,21 +91,35 @@ optimize_one() {
   local out="$OUT_DIR/$rel"
   mkdir -p "$(dirname "$out")"
 
-  local orig_bytes
+  local orig_bytes src_hash
   orig_bytes=$(stat -c%s "$src")
+  src_hash=$(sha256sum "$src" | cut -d' ' -f1)
 
   # Animated .gif backgrounds are permitted by the README; pass them through
   # rather than flatten them into a still.
   if [ "${src##*.}" != "webp" ]; then
     cp "$src" "$out"
-    report "$rel" passthrough "$orig_bytes" "$orig_bytes" - -
+    report "$rel" passthrough "$orig_bytes" "$orig_bytes" - - "$src_hash"
     return
   fi
 
   if [ "$orig_bytes" -lt "$MIN_BYTES" ]; then
     cp "$src" "$out"
-    report "$rel" too-small "$orig_bytes" "$orig_bytes" - -
+    report "$rel" too-small "$orig_bytes" "$orig_bytes" - - "$src_hash"
     return
+  fi
+
+  # Only the ladder is worth skipping. The two branches above are a single cp,
+  # and one of them covers theme.json, which gen-theme-systems.sh rewrites in
+  # the pack afterwards -- reusing those would hand it a stale file to edit.
+  if [ -n "${PREV_MANIFEST:-}" ] && [ -f "$out" ]; then
+    local prev
+    prev=$(awk -F'\t' -v r="$rel" '$1 == r { print; exit }' "$PREV_MANIFEST")
+    if [ -n "$prev" ] && [ "$(printf '%s\n' "$prev" | cut -f7)" = "$src_hash" ]; then
+      printf '%s\n' "$prev" > "$(mktemp "$REPORT_DIR/r.XXXXXX")"
+      : > "$(mktemp "$REUSE_DIR/u.XXXXXX")"
+      return
+    fi
   fi
 
   # Deliberately not `local`: the EXIT trap below runs in global scope, after
@@ -125,11 +156,35 @@ optimize_one() {
   if [ -n "$best_q" ] && awk -v n="$best_bytes" -v o="$orig_bytes" -v m="$MIN_SAVING_PCT" \
        'BEGIN{exit !((1-n/o)*100 >= m)}'; then
     cp "$tmp/best.webp" "$out"
-    report "$rel" encoded "$orig_bytes" "$best_bytes" "$best_q" "$best_score"
+    report "$rel" encoded "$orig_bytes" "$best_bytes" "$best_q" "$best_score" "$src_hash"
   else
     cp "$src" "$out"
-    report "$rel" kept-original "$orig_bytes" "$orig_bytes" - "${best_score:--}"
+    report "$rel" kept-original "$orig_bytes" "$orig_bytes" - "${best_score:--}" "$src_hash"
   fi
+}
+
+# --------------------------------------------------------------- fingerprint
+
+# Everything that can change the bytes this script produces from a given
+# source. If any of it moves, the previous pack was built by a different
+# process and none of it may be reused.
+#
+# The encoder is the reason this exists rather than a hardcoded version: the
+# metric is a pinned static binary, but cwebp comes from the distro, so a
+# runner image bump silently re-tunes every file. Pinning the apt package
+# instead would make that a build failure to be fixed by hand; fingerprinting
+# turns it into a full rebuild, which is the answer anyway.
+build_fingerprint() {
+  # Whole output, not just the first line: it also carries libsharpyuv, and
+  # -sharp_yuv is on for every encode.
+  printf 'cwebp=%s\n' "$(cwebp -version 2>&1 | tr '\n' ' ')"
+  printf 'dwebp=%s\n' "$(dwebp -version 2>&1 | tr '\n' ' ')"
+  # The metric prints no version, and it decides which rung is shipped, so
+  # identify it by the bytes of the binary itself.
+  printf 'metric=%s %s\n' "$SSIM_NAME" \
+    "$(sha256sum "$(command -v "$SSIM_BIN")" | cut -d' ' -f1)"
+  printf 'ladder=%s floor=%s min_bytes=%s min_saving=%s\n' \
+    "$QUALITY_LADDER" "$SCORE_FLOOR" "$MIN_BYTES" "$MIN_SAVING_PCT"
 }
 
 # ----------------------------------------------------------------------- main
@@ -145,17 +200,45 @@ fi
 cd "$(dirname "$0")/.."
 detect_metric
 
-rm -rf "$OUT_DIR"
+MANIFEST="$OUT_DIR/.optimization-report.tsv"
+FINGERPRINT=$(build_fingerprint | sha256sum | cut -d' ' -f1)
+FINGERPRINT_HUMAN=$(build_fingerprint | grep -v '^metric=' | tr '\n' ' ' \
+  | sed 's/  */ /g; s/ *$//')
+
+# The pack is committed, so a checkout already carries the previous build --
+# no cache to restore, and on a PR the base branch's pack is exactly the right
+# thing to compare against.
+PREV_MANIFEST=""
+reuse_reason="full rebuild: no previous pack"
+if [ "${FORCE_REBUILD:-0}" = "1" ]; then
+  reuse_reason="full rebuild: FORCE_REBUILD=1"
+elif [ -f "$MANIFEST" ]; then
+  prev_fp=$(awk -F'\t' '$1 == "#fingerprint" { print $2; exit }' "$MANIFEST")
+  if [ "$prev_fp" = "$FINGERPRINT" ]; then
+    PREV_MANIFEST=$(mktemp)
+    cp "$MANIFEST" "$PREV_MANIFEST"
+    reuse_reason="incremental: reusing entries whose source is unchanged"
+  elif [ -z "$prev_fp" ]; then
+    reuse_reason="full rebuild: previous pack predates fingerprinting"
+  else
+    reuse_reason="full rebuild: toolchain or parameters changed"
+  fi
+fi
+
 mkdir -p "$OUT_DIR"
 
 REPORT_DIR=$(mktemp -d)
-trap 'rm -rf "$REPORT_DIR"' EXIT
-export REPORT_DIR OUT_DIR QUALITY_LADDER SCORE_FLOOR MIN_BYTES MIN_SAVING_PCT
+REUSE_DIR=$(mktemp -d)
+trap 'rm -rf "$REPORT_DIR" "$REUSE_DIR" "${PREV_MANIFEST:-}"' EXIT
+export REPORT_DIR REUSE_DIR PREV_MANIFEST OUT_DIR \
+       QUALITY_LADDER SCORE_FLOOR MIN_BYTES MIN_SAVING_PCT
 
 echo "metric:  $SSIM_NAME"
+echo "encoder: $(cwebp -version 2>&1 | head -1)"
 echo "floor:   SSIMULACRA2 >= $SCORE_FLOOR"
 echo "ladder:  $QUALITY_LADDER"
 echo "jobs:    $JOBS"
+echo "mode:    $reuse_reason"
 echo
 
 find $SRC_DIRS -type f -print0 \
@@ -164,6 +247,20 @@ find $SRC_DIRS -type f -print0 \
 for f in $COPY_FILES; do
   [ -f "$f" ] && cp "$f" "$OUT_DIR/$f"
 done
+
+# A source that was deleted or renamed leaves its old output behind now that
+# the pack is built in place rather than from scratch.
+pruned=0
+while IFS= read -r -d '' packed; do
+  rel="${packed#"$OUT_DIR"/}"
+  [ "$rel" = ".optimization-report.tsv" ] && continue
+  case " $COPY_FILES " in *" $rel "*) continue ;; esac
+  if [ ! -f "$rel" ]; then
+    rm -f "$packed"
+    pruned=$((pruned + 1))
+  fi
+done < <(find "$OUT_DIR" -type f -print0)
+find "$OUT_DIR" -mindepth 1 -type d -empty -delete
 
 # The systems list is derived from the backgrounds present, so regenerate it
 # against the built pack rather than trusting whatever was last committed to
@@ -175,9 +272,17 @@ else
   echo "warn: jq not found; dist theme.json systems lists left as copied" >&2
 fi
 
-cat "$REPORT_DIR"/r.* | sort > "$OUT_DIR/.optimization-report.tsv"
+# The fingerprint rides on the report so the pack carries the record of what
+# built it, and the next run can tell whether it may keep any of it.
+{
+  printf '#fingerprint\t%s\t%s\n' "$FINGERPRINT" "$FINGERPRINT_HUMAN"
+  cat "$REPORT_DIR"/r.* | sort
+} > "$MANIFEST"
 
-awk -F'\t' '
+reused=$(find "$REUSE_DIR" -type f | wc -l)
+
+awk -F'\t' -v reused="$reused" -v pruned="$pruned" '
+  /^#/ { next }
   { o+=$3; n+=$4; act[$2]++ }
   $2=="encoded" { qs[$5]++; sc+=$6; nsc++ }
   END {
@@ -185,6 +290,8 @@ awk -F'\t' '
     printf "%-14s %s\n", "kept-original",act["kept-original"]+0
     printf "%-14s %s\n", "too-small",    act["too-small"]+0
     printf "%-14s %s\n", "passthrough",  act["passthrough"]+0
+    printf "%-14s %s\n", "reused",       reused+0
+    printf "%-14s %s\n", "pruned",       pruned+0
     printf "\n%-14s %.1f MB\n", "original:",  o/1048576
     printf "%-14s %.1f MB\n",   "optimized:", n/1048576
     printf "%-14s %.1f%% smaller\n", "saving:", (1-n/o)*100
@@ -192,4 +299,4 @@ awk -F'\t' '
     print "\nquality chosen:"
     for (q in qs) printf "  q%-4s %s files\n", q, qs[q]
   }
-' "$OUT_DIR/.optimization-report.tsv"
+' "$MANIFEST"
