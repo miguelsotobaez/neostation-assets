@@ -1,0 +1,11 @@
+{
+  "latest_version": "0.6.0",
+  "themes": [
+    {
+      "name": "NeoStation",
+      "author": "Misoba",
+      "folder": "NeoStation",
+      "preview": "preview/neostation.webp"
+    }
+  ]
+}
