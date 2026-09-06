@@ -72,6 +72,7 @@ themes/NeoStation/backgrounds/psp.webp	encoded	253438	90586	84	80.98426183	0b5a3
 themes/NeoStation/backgrounds/sat.webp	encoded	615920	282058	88	80.74677799	46430cdb3e24fb2612f062a46f8b31a9ee4a887c486e0f8ccad6b89a09fa2636
 themes/NeoStation/backgrounds/satellaview.webp	encoded	333900	112036	84	81.00729204	38fa869a5a5238da2033b825b0f00fc79b0a253e9959e5781a0409fea353c5e8
 themes/NeoStation/backgrounds/scd.webp	encoded	596936	336460	88	81.03704191	3ea51c135b3f514ac5e3a677cede7da4c650447c57974982190c8aae69a25bb3
+themes/NeoStation/backgrounds/scummvm.webp	encoded	468854	37016	82	82.48852486	bb01388429594d790c83d9c0fb355064184b7341e313b40e3a9e9be5a2d3f2fe
 themes/NeoStation/backgrounds/sfc.webp	encoded	598204	241278	84	80.83829726	5de93a4bb02df5473ece1affa865e523ccce32607906d7da9c39a42c525132b3
 themes/NeoStation/backgrounds/sg1k.webp	encoded	396708	149704	86	80.95997372	d983f923ae4834b4788d23b03cecc69b891663e622e80ac23f24078051da606d
 themes/NeoStation/backgrounds/sharpx68000.webp	encoded	541742	226064	90	80.36264830	b585e948938f6bd9bdcff6f18cd99260b192d6fc3e24eb83d4dcfd68ed31a0c1
@@ -96,4 +97,4 @@ themes/NeoStation/backgrounds/wsv.webp	encoded	302658	111762	88	80.72086823	4dfe
 themes/NeoStation/backgrounds/xbox.webp	encoded	452462	172308	86	80.06666805	a7a18a657ef30822d28a86ccfaab7d7e87ba8ccf74f3f94bb6b4e0d9e2630839
 themes/NeoStation/backgrounds/xbox360.webp	encoded	345592	137134	90	81.76529730	875ce93310df877d39b97090c69f1a88fafeb4da63bf3eb16a85284c2aec4db8
 themes/NeoStation/backgrounds/zxspectrum.webp	encoded	471040	176756	84	80.36970660	2e5c5c1abc84c2d45fae559fadef6815908f51c59f9c5c38f84e639434215b55
-themes/NeoStation/theme.json	passthrough	1338	1338	-	-	310df128b7d9d5fdb7f5338d14e29c1e1dafbb4d886dcbf77ab043e07ca89d3f
+themes/NeoStation/theme.json	passthrough	1353	1353	-	-	e449a464aa30c9fc1704e7608bd82a658af74a335daeb9a1405a59ea105d407c
